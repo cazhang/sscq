@@ -1,0 +1,65 @@
+"""
+Part consistent quantization loss
+"""
+
+import torch
+import torch.nn as nn
+
+
+class PN_Loss(nn.Module):
+    """Part neighbor discriminative learning"""
+    def __init__(self, batch_size, L_word, N_books, tau_pn, N_top_part_neighbor, mask_neg, pn_use_pos=False):
+        super(PN_Loss, self).__init__()
+        self.batch_size = batch_size
+        self.L_word = L_word
+        self.N_books = N_books
+        self.tau_pn = tau_pn
+        self.mask_neg = mask_neg
+        self.N_top_part_neighbor = N_top_part_neighbor
+        self.pn_use_pos = pn_use_pos
+        self.sim_metric = torch.nn.CosineSimilarity(dim=-1)
+
+    def forward(self, Za, Zb):
+        Za_p = torch.split(Za, self.L_word, dim=1)
+        Zb_p = torch.split(Zb, self.L_word, dim=1)
+        loss_pn = 0
+
+        for i in range(self.N_books):
+            ZaZb_p = torch.cat([Za_p[i], Zb_p[i]], dim=0)
+            Sim_p = self.sim_metric(ZaZb_p.unsqueeze(1), ZaZb_p.unsqueeze(0))
+            if self.pn_use_pos:
+                Neg_p = Sim_p.view(2 * self.batch_size, -1)
+            else:
+                Neg_p = Sim_p[self.mask_neg].view(2 * self.batch_size, -1)
+				
+            neighbors, _ = Neg_p.sort(dim=1, descending=True)
+            s_p = ((neighbors[:,:self.N_top_part_neighbor] / self.tau_pn).exp().sum(dim=1)).log()
+            s_all = ((neighbors / self.tau_pn).exp().sum(dim=1)).log()
+            loss_pn += (-s_p+s_all).sum().div(2*self.batch_size)
+        loss_pn *= 1/self.N_books
+
+        return loss_pn
+
+
+class ER_Loss(nn.Module):
+    """Entropy maximization based coodeword diversity entropy regularization"""
+    def __init__(self, batch_size, N_books, epsilon=1e-5):
+        super(ER_Loss, self).__init__()
+        self.batch_size = batch_size
+        self.N_books = N_books
+        self.epsilon = epsilon
+
+    def forward(self, Pa, Pb):
+        Pa_p = torch.split(Pa, self.batch_size, dim=0)
+        Pb_p = torch.split(Pb, self.batch_size, dim=0)
+        loss_cd = 0
+        
+        for j in range(self.N_books):
+            P_p = torch.cat([Pa_p[j], Pb_p[j]], dim=0)
+            P_p = nn.Softmax(dim=1)(P_p)
+            mP_p = P_p.mean(dim=0)
+            loss_cd += torch.sum(mP_p * torch.log(mP_p+self.epsilon))
+        loss_cd *= 1/self.N_books
+
+        return loss_cd
+

@@ -1,0 +1,67 @@
+"""
+Global consistent quantization loss
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import os
+os.environ['PYTHONBREAKPOINT']='ipdb.set_trace'
+
+class IC_Loss(nn.Module):
+	"""Instance contrastive learning loss"""
+	def __init__(self, batch_size, tau_ic, mask_neg):
+		super(IC_Loss, self).__init__()
+		self.batch_size = batch_size
+		self.tau_ic = tau_ic
+		self.mask_neg = mask_neg
+		self.sim_metric = torch.nn.CosineSimilarity(dim=-1)
+		self.CE_Loss = torch.nn.CrossEntropyLoss()
+
+	def forward(self, Xa, Xb, labels):
+		XaXb = torch.cat([Xa, Xb], dim=0)
+		Sim = self.sim_metric(XaXb.unsqueeze(1), XaXb.unsqueeze(0))
+		Diag_a = torch.diag(Sim, self.batch_size)
+		Diag_b = torch.diag(Sim, -self.batch_size)
+		Pos = torch.cat([Diag_a, Diag_b]).view(2*self.batch_size, 1)
+		Neg = Sim[self.mask_neg].view(2*self.batch_size, -1)
+
+		logits = torch.cat((Pos, Neg), dim=1)
+		logits *= 1/self.tau_ic
+		loss = self.CE_Loss(logits, labels)
+
+		return loss, Neg
+
+
+class KL_Loss(nn.Module):
+	"""Kullback-Leibler divergence loss"""
+	def __init__(self, temperature):
+		super(KL_Loss, self).__init__()
+		self.T = temperature
+
+	def forward(self, logits_p, logits_q):
+		# Symmetric KL Divergence
+		logits_p_1 = F.log_softmax(logits_p/self.T, dim=1)
+		logits_q_1 = F.softmax(logits_q/self.T, dim=1)
+		loss_1 = nn.KLDivLoss(reduction='batchmean')(logits_p_1, logits_q_1)
+
+		logits_q_2 = F.log_softmax(logits_q/self.T, dim=1)
+		logits_p_2 = F.softmax(logits_p/self.T, dim=1)
+		loss_2 = nn.KLDivLoss(reduction='batchmean')(logits_q_2, logits_p_2)
+
+		return loss_1*0.5+loss_2*0.5
+	
+class CL_Loss(nn.Module):
+	"""Sub-embedding Classification Loss"""
+	def __init__(self, batch_size):
+		super(CL_Loss, self).__init__()
+		self.batch_size = batch_size
+		self.NLL_Loss = nn.NLLLoss()
+		
+	def forward(self, logits_a, logits_b, labels):
+		breakpoint()
+		labels_repeat = labels.repeat(self.batch_size)
+		loss_a = self.NLL_Loss(logits_a, labels_repeat)
+		loss_b = self.NLL_Loss(logits_b, labels_repeat)
+		loss = loss_a + loss_b 
+		return loss 
